@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Random Stranger Video Chat</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      background: #111;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 100vh;
+    }
+    header {
+      padding: 1em;
+      font-size: 1.5em;
+      font-weight: bold;
+    }
+    .videos {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 1em;
+      flex: 1;
+    }
+    video {
+      width: 45%;
+      max-width: 400px;
+      border-radius: 10px;
+      border: 2px solid #555;
+      background: #000;
+    }
+    button {
+      margin: 1em;
+      padding: 0.75em 1.5em;
+      font-size: 1em;
+      border: none;
+      border-radius: 8px;
+      background: #0d6efd;
+      color: white;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #0b5ed7;
+    }
+  </style>
+</head>
+<body>
+  <header>🎥 Chat with a Random Stranger</header>
+  <div class="videos">
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+  <button onclick="startChat()">Find Stranger</button>
+
+  <script>
+    const localVideo = document.getElementById("localVideo");
+    const remoteVideo = document.getElementById("remoteVideo");
+
+    const uid = crypto.randomUUID().slice(0, 4) + '-' + crypto.randomUUID().slice(0, 4) + '-' + crypto.randomUUID().slice(0, 4);
+    const ws = new WebSocket("wss://lotta.lol/");
+    let peerConnection;
+    let localStream;
+
+    const config = {
+      iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    };
+
+    ws.onopen = () => {
+      console.log("Connected to signaling server");
+      ws.send(JSON.stringify({ channel: "peopleOnline" }));
+    };
+
+    ws.onmessage = async (msg) => {
+      const { channel, data } = JSON.parse(msg.data);
+
+      if (channel === "peopleOnline") {
+        console.log(`People online: ${data}`);
+      }
+
+      if (channel === "connected") {
+        console.log("Matched with peer:", data.peerUID);
+        await setupConnection(true);
+      }
+
+      if (channel === "begin") {
+        console.log("Call starting...");
+      }
+
+      if (channel === "description") {
+        if (data.type === "offer") {
+          await setupConnection(false);
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+          const answer = await peerConnection.createAnswer();
+          await peerConnection.setLocalDescription(answer);
+          ws.send(JSON.stringify({ channel: "description", data: answer }));
+        } else if (data.type === "answer") {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        }
+      }
+
+      if (channel === "iceCandidate") {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(data));
+        } catch (err) {
+          console.error("ICE error:", err);
+        }
+      }
+    };
+
+    async function startChat() {
+      if (!localStream) {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        localVideo.srcObject = localStream;
+      }
+      ws.send(JSON.stringify({ channel: "match", data: { data: "video", interests: [], uid } }));
+    }
+
+    async function setupConnection(initiator) {
+      peerConnection = new RTCPeerConnection(config);
+
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          ws.send(JSON.stringify({ channel: "iceCandidate", data: event.candidate }));
+        }
+      };
+
+      peerConnection.ontrack = (event) => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+
+      peerConnection.oniceconnectionstatechange = () => {
+        if (peerConnection.iceConnectionState === "disconnected") {
+          console.log("Peer disconnected. Attempting to reconnect...");
+          startChat(); // Reconnect by finding a new stranger
+        }
+      };
+
+      if (initiator) {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        ws.send(JSON.stringify({ channel: "description", data: offer }));
+      }
+    }
+  </script>
+</body>
+</html>
